@@ -1,7 +1,8 @@
 FROM python:3.10-slim
 
-# Cài đặt các thư viện hệ thống cần thiết cho voice
+# Cài đặt FFmpeg và các thư viện hệ thống cần thiết cho voice/nhạc
 RUN apt-get update && apt-get install -y \
+    ffmpeg \
     libffi-dev \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
