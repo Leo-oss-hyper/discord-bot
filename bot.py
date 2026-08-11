@@ -1,6 +1,7 @@
 import os
 import discord
 from discord.ext import commands
+import yt_dlp
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -17,7 +18,7 @@ async def on_ready():
 async def ping(ctx):
     await ctx.send("Pong! 🏓")
 
-# 1. Lệnh treo voice (Giống như cũ)
+# Lệnh treo voice
 @bot.command()
 async def afk(ctx, *, arg=None):
     if arg == "voice":
@@ -32,7 +33,7 @@ async def afk(ctx, *, arg=None):
     else:
         await ctx.send("Vui lòng dùng đúng cú pháp: `!afk voice`")
 
-# 2. Lệnh phát nhạc hoặc kể chuyện từ link YouTube
+# Lệnh phát nhạc/truyện bằng link YouTube đã fix lỗi chặn
 @bot.command()
 async def play(ctx, url: str):
     if not ctx.author.voice:
@@ -40,7 +41,6 @@ async def play(ctx, url: str):
     
     channel = ctx.author.voice.channel
     
-    # Nếu bot chưa ở trong phòng voice thì tự động chui vào
     if not ctx.voice_client:
         await channel.connect()
     elif ctx.voice_client.channel != channel:
@@ -49,39 +49,56 @@ async def play(ctx, url: str):
     if ctx.voice_client.is_playing():
         ctx.voice_client.stop()
 
-    # Cấu hình để bot phát âm thanh trực tiếp từ link YouTube (nhạc hoặc truyện)
-    options = {
+    # Cấu hình yt-dlp để vượt tường lửa YouTube
+    ytdl_options = {
         'format': 'bestaudio/best',
         'noplaylist': True,
+        'extractaudio': True,
+        'audioformat': 'mp3',
+        'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+        'restrictfilenames': True,
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
+        'logtostderr': False,
+        'quiet': True,
+        'no_warnings': True,
+        'default_search': 'auto',
+        'source_address': '0.0.0.0',
+        # Giả lập trình duyệt Chrome để không bị YouTube chặn 403 Forbidden
+        'socket_timeout': 30,
+        'cachedir': False
     }
-    
-    import yt_dlp
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
-        audio_url = info['url']
-        title = info.get('title', 'Âm thanh')
 
-    # Dùng FFmpeg để stream âm thanh vào voice
+    try:
+        with yt_dlp.YoutubeDL(ytdl_options) as ydl:
+            info = ydl.extract_info(url, download=False)
+            audio_url = info.get('url')
+            title = info.get('title', 'Âm thanh')
+    except Exception as e:
+        return await ctx.send(f"Không thể phát link này do YouTube chặn: `{e}`")
+
     ffmpeg_options = {
         'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-        'options': '-vn'
+        'options': '-vn -b:a 192k'
     }
     
-    source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options)
-    ctx.voice_client.play(source, after=lambda e: print(f'Đã phát xong: {e}'))
-    
-    await ctx.send(f"Đang phát: **{title}** 🎶🎧")
+    try:
+        source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options)
+        ctx.voice_client.play(source, after=lambda e: print(f'Lỗi âm thanh (nếu có): {e}'))
+        await ctx.send(f"Đang phát: **{title}** 🎶🎧")
+    except Exception as e:
+        await ctx.send(f"Lỗi khi phát âm thanh vào voice: `{e}`")
 
-# 3. Lệnh dừng phát
+# Lệnh dừng phát
 @bot.command()
 async def stop(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
-        await ctx.send("Đã dừng phát âm thanh! ⏹️")
+        await ctx.send("Đã dừng phát! ⏹️")
     else:
         await ctx.send("Em có đang phát gì đâu!")
 
-# 4. Lệnh rời phòng voice
+# Lệnh rời phòng voice
 @bot.command()
 async def leave(ctx):
     if ctx.voice_client:
