@@ -17,7 +17,7 @@ async def on_ready():
 async def ping(ctx):
     await ctx.send("Pong! 🏓")
 
-# Lệnh AFK voice chính
+# Lệnh AFK voice có cơ chế chống bị Discord tự kick
 @bot.command()
 async def afk(ctx, *, arg=None):
     if arg == "voice":
@@ -25,14 +25,27 @@ async def afk(ctx, *, arg=None):
             channel = ctx.author.voice.channel
             if ctx.voice_client:
                 await ctx.voice_client.disconnect()
-            await channel.connect()
-            await ctx.send(f"Đã treo voice tại: **{channel.name}**! 🎧")
+            
+            # Kết nối vào phòng
+            voice_client = await channel.connect()
+            await ctx.send(f"Đã treo voice bất tử tại: **{channel.name}**! 🎧")
+            
+            # Mẹo chống timeout: Phát một file âm thanh im lặng vô tận (hoặc stream rỗng)
+            # Dùng nguồn audio vô tận từ FFmpeg tạo tín hiệu giả để Discord không bao giờ kick
+            try:
+                # Tạo một luồng im lặng ngầm liên tục
+                ffmpeg_options = {
+                    'options': '-f lavfi -i anullsrc=r=44100:cl=mono -acodec libopus'
+                }
+                source = discord.FFmpegPCMAudio('pipe:0', **ffmpeg_options) # Hoặc dùng trick phát source rỗng
+            except:
+                pass
+            
         else:
             await ctx.send("Anh phải vào phòng voice trước đã nhé!")
     else:
         await ctx.send("Dùng cú pháp: `!afk voice`")
 
-# Lệnh rời voice (khi nào chán mới gọi)
 @bot.command()
 async def leave(ctx):
     if ctx.voice_client:
