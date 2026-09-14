@@ -1,58 +1,107 @@
 import os
+import threading
+import asyncio
 import discord
-from discord.ext import commands
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Discord AFK Voice Bot đang hoạt động!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.voice_states = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
 
-@bot.event
+current_voice_client = None
+inactivity_task = None
+
+async def disconnect_after_24h(voice_client):
+    global inactivity_task, current_voice_client
+    try:
+        # 24 giờ = 86400 giây
+        await asyncio.sleep(86400)
+        if voice_client and voice_client.is_connected():
+            members = [m for m in voice_client.channel.members if not m.bot]
+            if len(members) == 0:
+                await voice_client.disconnect()
+                current_voice_client = None
+                inactivity_task = None
+                print("Đã tự động rời voice do trống vắng suốt 24 giờ liên tục.")
+    except asyncio.CancelledError:
+        pass
+
+@client.event
 async def on_ready():
-    print(f"Bot đã online: {bot.user}")
+    print(f'Đã đăng nhập thành công với tên: {client.user}')
 
-@bot.command()
-async def ping(ctx):
-    await ctx.send("Pong! 🏓")
+@client.event
+async def on_voice_state_update(member, before, after):
+    global current_voice_client, inactivity_task
+    if member.bot:
+        return
 
-# Lệnh AFK voice có cơ chế chống bị Discord tự kick
-@bot.command()
-async def afk(ctx, *, arg=None):
-    if arg == "voice":
-        if ctx.author.voice:
-            channel = ctx.author.voice.channel
-            if ctx.voice_client:
-                await ctx.voice_client.disconnect()
-            
-            # Kết nối vào phòng
-            voice_client = await channel.connect()
-            await ctx.send(f"Đã treo voice bất tử tại: **{channel.name}**! 🎧")
-            
-            # Mẹo chống timeout: Phát một file âm thanh im lặng vô tận (hoặc stream rỗng)
-            # Dùng nguồn audio vô tận từ FFmpeg tạo tín hiệu giả để Discord không bao giờ kick
-            try:
-                # Tạo một luồng im lặng ngầm liên tục
-                ffmpeg_options = {
-                    'options': '-f lavfi -i anullsrc=r=44100:cl=mono -acodec libopus'
-                }
-                source = discord.FFmpegPCMAudio('pipe:0', **ffmpeg_options) # Hoặc dùng trick phát source rỗng
-            except:
-                pass
-            
+    if current_voice_client and current_voice_client.is_connected():
+        channel = current_voice_client.channel
+        real_members = [m for m in channel.members if not m.bot]
+        
+        if len(real_members) == 0:
+            # Phòng trống: Nếu chưa có bộ đếm nào chạy thì bắt đầu đếm mới 24h
+            if inactivity_task is None or inactivity_task.done():
+                inactivity_task = asyncio.create_task(disconnect_after_24h(current_voice_client))
         else:
-            await ctx.send("Anh phải vào phòng voice trước đã nhé!")
-    else:
-        await ctx.send("Dùng cú pháp: `!afk voice`")
+            # Có người vào phòng: Hủy bộ đếm hiện tại (reset thời gian chờ)
+            if inactivity_task and not inactivity_task.done():
+                inactivity_task.cancel()
+                inactivity_task = None
 
-@bot.command()
-async def leave(ctx):
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("Đã rời phòng! 👋")
-    else:
-        await ctx.send("Bot có đang ở trong voice đâu!")
+@client.event
+async def on_message(message):
+    global current_voice_client, inactivity_task
+    if message.author == client.user:
+        return
+    
+    if message.content.strip() == '!afk voice':
+        if not message.author.voice or not message.author.voice.channel:
+            await message.channel.send("❌ Bạn phải vào một phòng Voice trước thì bot mới biết đường vào theo chứ!")
+            return
+        
+        target_channel = message.author.voice.channel
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-bot.run(TOKEN)
+        try:
+            if current_voice_client and current_voice_client.is_connected():
+                await current_voice_client.disconnect()
+
+            current_voice_client = await target_channel.connect()
+            await message.channel.send(f"🎧 Đã vào phòng **{target_channel.name}** để treo voice cùng bạn!")
+
+            if inactivity_task and not inactivity_task.done():
+                inactivity_task.cancel()
+                inactivity_task = None
+
+            real_members = [m for m in target_channel.members if not m.bot]
+            if len(real_members) == 0:
+                inactivity_task = asyncio.create_task(disconnect_after_24h(current_voice_client))
+
+        except Exception as e:
+            await message.channel.send(f"❌ Có lỗi khi kết nối voice: {e}")
+
+TOKEN = os.environ.get("DISCORD_TOKEN")
+
+if __name__ == "__main__":
+    web_thread = threading.Thread(target=run_web)
+    web_thread.daemon = True
+    web_thread.start()
+
+    if TOKEN:
+        client.run(TOKEN)
+    else:
+        print("Lỗi: Chưa thiết lập DISCORD_TOKEN trong Environment Variables của Render!")
