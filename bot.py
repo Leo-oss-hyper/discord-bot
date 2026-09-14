@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-  return "Discord AFK Voice & Gemini Bot đang hoạt động!"
+  return "Discord AFK Voice & Gemini Vision Bot đang hoạt động!"
 
 
 def run_web():
@@ -84,7 +84,7 @@ async def on_message(message):
 
   content = message.content.strip()
 
-  # Xử lý lệnh AFK voice cũ
+  # Xử lý lệnh AFK voice
   if content == "!afk voice":
     if not message.author.voice or not message.author.voice.channel:
       await message.channel.send(
@@ -118,23 +118,67 @@ async def on_message(message):
       await message.channel.send(f"❌ Có lỗi khi kết nối voice: {e}")
     return
 
-  # Xử lý lệnh hỏi Gemini AI (!ai <nội dung>)
-  if content.startswith("!ai "):
-    user_message = content[4:].strip()
-    if not user_message:
-      await message.channel.send("Anh nhớ nhập nội dung cần hỏi sau lệnh !ai nhé!")
+  # Xử lý lệnh !ai (hỗ trợ cả văn bản và hình ảnh)
+  if content.startswith("!ai") or message.attachments:
+    # Lấy nội dung text sau chữ !ai (nếu có)
+    user_prompt = ""
+    if content.startswith("!ai "):
+      user_prompt = content[4:].strip()
+    elif content == "!ai":
+      user_prompt = ""
+
+    # Kiểm tra xem có đính kèm ảnh không
+    image_url = None
+    if message.attachments:
+      for attachment in message.attachments:
+        if any(
+            attachment.filename.lower().endswith(ext)
+            for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+        ):
+          image_url = attachment.url
+          break
+
+    # Nếu không có text cũng không có ảnh hợp lệ thì nhắc nhở
+    if not user_prompt and not image_url:
+      await message.channel.send(
+          "Anh nhớ nhập nội dung hoặc gửi kèm ảnh cùng lệnh `!ai` nhé!"
+      )
       return
 
     async with message.channel.typing():
       try:
+        # Xây dựng cấu trúc message phù hợp cho OpenAI-compatible API với hình ảnh
+        if image_url:
+          if not user_prompt:
+            user_prompt = (
+                "Hãy đọc toàn bộ văn bản trong ảnh này và dịch sang tiếng Việt"
+                " một cách tự nhiên, chính xác nhất."
+            )
+
+          messages_payload = [{
+              "role": "system",
+              "content": (
+                  "Bạn là một trợ lý AI thông minh, giỏi phân tích hình ảnh và"
+                  " dịch thuật trên Discord."
+              ),
+          }, {
+              "role": "user",
+              "content": [
+                  {"type": "text", "text": user_prompt},
+                  {"type": "image_url", "image_url": {"url": image_url}},
+              ],
+          }]
+        else:
+          messages_payload = [{
+              "role": "system",
+              "content": (
+                  "Bạn là một trợ lý AI hữu ích, thân thiện trên Discord."
+              ),
+          }, {"role": "user", "content": user_prompt}]
+
         response = ai_client.chat.completions.create(
             model="gemini-3.6-flash",
-            messages=[{
-                "role": "system",
-                "content": (
-                    "Bạn là một trợ lý AI hữu ích, thân thiện trên Discord."
-                ),
-            }, {"role": "user", "content": user_message}],
+            messages=messages_payload,
             stream=False,
         )
         reply_content = response.choices[0].message.content
@@ -144,7 +188,7 @@ async def on_message(message):
 
         await message.channel.send(reply_content)
       except Exception as e:
-        await message.channel.send(f"Đã xảy ra lỗi khi gọi Gemini AI: {e}")
+        await message.channel.send(f"Đã xảy ra lỗi khi xử lý: {e}")
     return
 
 
