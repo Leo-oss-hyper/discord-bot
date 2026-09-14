@@ -128,7 +128,7 @@ async def on_message(message):
     async with message.channel.typing():
       try:
         response = ai_client.chat.completions.create(
-            model="gemini-2.5-flash",  # Sử dụng model flash miễn phí và cực nhanh của Google
+            model="gemini-3.6-flash",
             messages=[{
                 "role": "system",
                 "content": (
