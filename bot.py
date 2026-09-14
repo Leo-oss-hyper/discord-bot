@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-  return "Discord AFK Voice & AI Bot đang hoạt động!"
+  return "Discord AFK Voice & Gemini Bot đang hoạt động!"
 
 
 def run_web():
@@ -25,10 +25,10 @@ intents.voice_states = True
 
 client = discord.Client(intents=intents)
 
-# Khởi tạo client DeepSeek AI
+# Khởi tạo client kết nối tới Gemini qua chuẩn OpenAI-compatible
 ai_client = OpenAI(
-    api_key=os.environ.get("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com",
+    api_key=os.environ.get("GEMINI_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
 )
 
 current_voice_client = None
@@ -118,7 +118,7 @@ async def on_message(message):
       await message.channel.send(f"❌ Có lỗi khi kết nối voice: {e}")
     return
 
-  # Xử lý lệnh hỏi AI mới (!ai <nội dung>)
+  # Xử lý lệnh hỏi Gemini AI (!ai <nội dung>)
   if content.startswith("!ai "):
     user_message = content[4:].strip()
     if not user_message:
@@ -128,7 +128,7 @@ async def on_message(message):
     async with message.channel.typing():
       try:
         response = ai_client.chat.completions.create(
-            model="deepseek-chat",
+            model="gemini-2.5-flash",  # Sử dụng model flash miễn phí và cực nhanh của Google
             messages=[{
                 "role": "system",
                 "content": (
@@ -144,7 +144,7 @@ async def on_message(message):
 
         await message.channel.send(reply_content)
       except Exception as e:
-        await message.channel.send(f"Đã xảy ra lỗi khi gọi AI: {e}")
+        await message.channel.send(f"Đã xảy ra lỗi khi gọi Gemini AI: {e}")
     return
 
 
