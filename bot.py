@@ -54,11 +54,9 @@ async def on_voice_state_update(member, before, after):
         real_members = [m for m in channel.members if not m.bot]
         
         if len(real_members) == 0:
-            # Phòng trống: Nếu chưa có bộ đếm nào chạy thì bắt đầu đếm mới 24h
             if inactivity_task is None or inactivity_task.done():
                 inactivity_task = asyncio.create_task(disconnect_after_24h(current_voice_client))
         else:
-            # Có người vào phòng: Hủy bộ đếm hiện tại (reset thời gian chờ)
             if inactivity_task and not inactivity_task.done():
                 inactivity_task.cancel()
                 inactivity_task = None
