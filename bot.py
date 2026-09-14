@@ -1,8 +1,10 @@
 import asyncio
+import base64
 import os
 import threading
 import discord
 from flask import Flask
+import httpx
 from openai import OpenAI
 
 app = Flask(__name__)
@@ -120,14 +122,13 @@ async def on_message(message):
 
   # Xử lý lệnh !ai (hỗ trợ cả văn bản và hình ảnh)
   if content.startswith("!ai") or message.attachments:
-    # Lấy nội dung text sau chữ !ai (nếu có)
     user_prompt = ""
     if content.startswith("!ai "):
       user_prompt = content[4:].strip()
     elif content == "!ai":
       user_prompt = ""
 
-    # Kiểm tra xem có đính kèm ảnh không
+    image_bytes = None
     image_url = None
     if message.attachments:
       for attachment in message.attachments:
@@ -138,7 +139,6 @@ async def on_message(message):
           image_url = attachment.url
           break
 
-    # Nếu không có text cũng không có ảnh hợp lệ thì nhắc nhở
     if not user_prompt and not image_url:
       await message.channel.send(
           "Anh nhớ nhập nội dung hoặc gửi kèm ảnh cùng lệnh `!ai` nhé!"
@@ -147,27 +147,42 @@ async def on_message(message):
 
     async with message.channel.typing():
       try:
-        # Xây dựng cấu trúc message phù hợp cho OpenAI-compatible API với hình ảnh
+        messages_payload = []
         if image_url:
-          if not user_prompt:
-            user_prompt = (
-                "Hãy đọc toàn bộ văn bản trong ảnh này và dịch sang tiếng Việt"
-                " một cách tự nhiên, chính xác nhất."
-            )
+          async with httpx.AsyncClient() as httpx_client:
+            img_response = await httpx_client.get(image_url)
+            if img_response.status_code == 200:
+              image_bytes = img_response.content
 
-          messages_payload = [{
-              "role": "system",
-              "content": (
-                  "Bạn là một trợ lý AI thông minh, giỏi phân tích hình ảnh và"
-                  " dịch thuật trên Discord."
-              ),
-          }, {
-              "role": "user",
-              "content": [
-                  {"type": "text", "text": user_prompt},
-                  {"type": "image_url", "image_url": {"url": image_url}},
-              ],
-          }]
+          if image_bytes:
+            encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+            if not user_prompt:
+              user_prompt = (
+                  "Hãy đọc toàn bộ văn bản trong ảnh này và dịch sang tiếng Việt"
+                  " một cách tự nhiên, chính xác nhất."
+              )
+
+            messages_payload = [{
+                "role": "system",
+                "content": (
+                    "Bạn là một trợ lý AI thông minh, giỏi phân tích hình ảnh và"
+                    " dịch thuật trên Discord."
+                ),
+            }, {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{encoded_image}"
+                        },
+                    },
+                ],
+            }]
+          else:
+            await message.channel.send("❌ Không thể tải được ảnh từ Discord về!")
+            return
         else:
           messages_payload = [{
               "role": "system",
