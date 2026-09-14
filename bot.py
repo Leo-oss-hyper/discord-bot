@@ -86,6 +86,37 @@ async def on_message(message):
 
   content = message.content.strip()
 
+  # Xử lý lệnh xóa tin nhắn (!clean <số lượng>)
+  if content.startswith("!clean"):
+    parts = content.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+      await message.channel.send(
+          "❌ Vui lòng nhập đúng cú pháp, ví dụ: `!clean 5` (xóa 5 tin nhắn gần"
+          " nhất)."
+      )
+      return
+
+    limit_num = int(parts[1])
+    if limit_num <= 0:
+      await message.channel.send("❌ Số lượng tin nhắn cần xóa phải lớn hơn 0!")
+      return
+
+    try:
+      # Xóa cả lệnh !clean vừa gõ và số lượng tin nhắn chỉ định (+1)
+      deleted = await message.channel.purge(limit=limit_num + 1)
+      temp_msg = await message.channel.send(
+          f"🗑️ Đã dọn dẹp thành công {len(deleted) - 1} tin nhắn!"
+      )
+      await asyncio.sleep(3)
+      await temp_msg.delete()
+    except discord.Forbidden:
+      await message.channel.send(
+          "❌ Bot không có quyền `Manage Messages` để xóa tin nhắn!"
+      )
+    except discord.HTTPException as e:
+      await message.channel.send(f"❌ Có lỗi xảy ra khi xóa tin nhắn: {e}")
+    return
+
   # Xử lý lệnh AFK voice
   if content == "!afk voice":
     if not message.author.voice or not message.author.voice.channel:
