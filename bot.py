@@ -1,18 +1,22 @@
+import asyncio
 import os
 import threading
-import asyncio
 import discord
 from flask import Flask
+from openai import OpenAI
 
 app = Flask(__name__)
 
-@app.route('/')
+
+@app.route("/")
 def home():
-    return "Discord AFK Voice Bot đang hoạt động!"
+  return "Discord AFK Voice & AI Bot đang hoạt động!"
+
 
 def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+  port = int(os.environ.get("PORT", 10000))
+  app.run(host="0.0.0.0", port=port)
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -21,85 +25,140 @@ intents.voice_states = True
 
 client = discord.Client(intents=intents)
 
+# Khởi tạo client DeepSeek AI
+ai_client = OpenAI(
+    api_key=os.environ.get("DEEPSEEK_API_KEY"),
+    base_url="https://api.deepseek.com",
+)
+
 current_voice_client = None
 inactivity_task = None
 
+
 async def disconnect_after_24h(voice_client):
-    global inactivity_task, current_voice_client
-    try:
-        # 24 giờ = 86400 giây
-        await asyncio.sleep(86400)
-        if voice_client and voice_client.is_connected():
-            members = [m for m in voice_client.channel.members if not m.bot]
-            if len(members) == 0:
-                await voice_client.disconnect()
-                current_voice_client = None
-                inactivity_task = None
-                print("Đã tự động rời voice do trống vắng suốt 24 giờ liên tục.")
-    except asyncio.CancelledError:
-        pass
+  global inactivity_task, current_voice_client
+  try:
+    await asyncio.sleep(86400)
+    if voice_client and voice_client.is_connected():
+      members = [m for m in voice_client.channel.members if not m.bot]
+      if len(members) == 0:
+        await voice_client.disconnect()
+        current_voice_client = None
+        inactivity_task = None
+        print("Đã tự động rời voice do trống vắng suốt 24 giờ liên tục.")
+  except asyncio.CancelledError:
+    pass
+
 
 @client.event
 async def on_ready():
-    print(f'Đã đăng nhập thành công với tên: {client.user}')
+  print(f"Đã đăng nhập thành công với tên: {client.user}")
+
 
 @client.event
 async def on_voice_state_update(member, before, after):
-    global current_voice_client, inactivity_task
-    if member.bot:
-        return
+  global current_voice_client, inactivity_task
+  if member.bot:
+    return
 
-    if current_voice_client and current_voice_client.is_connected():
-        channel = current_voice_client.channel
-        real_members = [m for m in channel.members if not m.bot]
-        
-        if len(real_members) == 0:
-            if inactivity_task is None or inactivity_task.done():
-                inactivity_task = asyncio.create_task(disconnect_after_24h(current_voice_client))
-        else:
-            if inactivity_task and not inactivity_task.done():
-                inactivity_task.cancel()
-                inactivity_task = None
+  if current_voice_client and current_voice_client.is_connected():
+    channel = current_voice_client.channel
+    real_members = [m for m in channel.members if not m.bot]
+
+    if len(real_members) == 0:
+      if inactivity_task is None or inactivity_task.done():
+        inactivity_task = asyncio.create_task(
+            disconnect_after_24h(current_voice_client)
+        )
+    else:
+      if inactivity_task and not inactivity_task.done():
+        inactivity_task.cancel()
+        inactivity_task = None
+
 
 @client.event
 async def on_message(message):
-    global current_voice_client, inactivity_task
-    if message.author == client.user:
-        return
-    
-    if message.content.strip() == '!afk voice':
-        if not message.author.voice or not message.author.voice.channel:
-            await message.channel.send("❌ Bạn phải vào một phòng Voice trước thì bot mới biết đường vào theo chứ!")
-            return
-        
-        target_channel = message.author.voice.channel
+  global current_voice_client, inactivity_task
+  if message.author == client.user:
+    return
 
-        try:
-            if current_voice_client and current_voice_client.is_connected():
-                await current_voice_client.disconnect()
+  content = message.content.strip()
 
-            current_voice_client = await target_channel.connect()
-            await message.channel.send(f"🎧 Đã vào phòng **{target_channel.name}** để treo voice cùng bạn!")
+  # Xử lý lệnh AFK voice cũ
+  if content == "!afk voice":
+    if not message.author.voice or not message.author.voice.channel:
+      await message.channel.send(
+          "❌ Bạn phải vào một phòng Voice trước thì bot mới biết đường vào"
+          " theo chứ!"
+      )
+      return
 
-            if inactivity_task and not inactivity_task.done():
-                inactivity_task.cancel()
-                inactivity_task = None
+    target_channel = message.author.voice.channel
 
-            real_members = [m for m in target_channel.members if not m.bot]
-            if len(real_members) == 0:
-                inactivity_task = asyncio.create_task(disconnect_after_24h(current_voice_client))
+    try:
+      if current_voice_client and current_voice_client.is_connected():
+        await current_voice_client.disconnect()
 
-        except Exception as e:
-            await message.channel.send(f"❌ Có lỗi khi kết nối voice: {e}")
+      current_voice_client = await target_channel.connect()
+      await message.channel.send(
+          f"🎧 Đã vào phòng **{target_channel.name}** để treo voice cùng bạn!"
+      )
+
+      if inactivity_task and not inactivity_task.done():
+        inactivity_task.cancel()
+        inactivity_task = None
+
+      real_members = [m for m in target_channel.members if not m.bot]
+      if len(real_members) == 0:
+        inactivity_task = asyncio.create_task(
+            disconnect_after_24h(current_voice_client)
+        )
+
+    except Exception as e:
+      await message.channel.send(f"❌ Có lỗi khi kết nối voice: {e}")
+    return
+
+  # Xử lý lệnh hỏi AI mới (!ai <nội dung>)
+  if content.startswith("!ai "):
+    user_message = content[4:].strip()
+    if not user_message:
+      await message.channel.send("Anh nhớ nhập nội dung cần hỏi sau lệnh !ai nhé!")
+      return
+
+    async with message.channel.typing():
+      try:
+        response = ai_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{
+                "role": "system",
+                "content": (
+                    "Bạn là một trợ lý AI hữu ích, thân thiện trên Discord."
+                ),
+            }, {"role": "user", "content": user_message}],
+            stream=False,
+        )
+        reply_content = response.choices[0].message.content
+
+        if len(reply_content) > 2000:
+          reply_content = reply_content[:1997] + "..."
+
+        await message.channel.send(reply_content)
+      except Exception as e:
+        await message.channel.send(f"Đã xảy ra lỗi khi gọi AI: {e}")
+    return
+
 
 TOKEN = os.environ.get("DISCORD_TOKEN")
 
 if __name__ == "__main__":
-    web_thread = threading.Thread(target=run_web)
-    web_thread.daemon = True
-    web_thread.start()
+  web_thread = threading.Thread(target=run_web)
+  web_thread.daemon = True
+  web_thread.start()
 
-    if TOKEN:
-        client.run(TOKEN)
-    else:
-        print("Lỗi: Chưa thiết lập DISCORD_TOKEN trong Environment Variables của Render!")
+  if TOKEN:
+    client.run(TOKEN)
+  else:
+    print(
+        "Lỗi: Chưa thiết lập DISCORD_TOKEN trong Environment Variables của"
+        " Render!"
+    )
