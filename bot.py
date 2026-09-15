@@ -120,9 +120,9 @@ async def ai_chat(ctx, *, prompt: str = None):
             " tiếng Việt."
         )
 
-      # Gọi Gemini API
+      # Gọi Gemini API với model chuẩn mới nhất
       response = gemini_client.models.generate_content(
-          model="gemini-2.5-flash", contents=contents
+          model="gemini-3.6-flash", contents=contents
       )
 
       ai_reply = response.text
