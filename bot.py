@@ -1,280 +1,200 @@
-import asyncio
 import base64
 import os
 import tempfile
-import threading
 import discord
+from discord.ext import commands
 from flask import Flask
+from google import genai
 import httpx
 from openai import OpenAI
-import edge_tts
 
+# ==================== CẤU HÌNH KHỞI TẠO ====================
 app = Flask(__name__)
 
 
 @app.route("/")
 def home():
-  return "Discord AI Voice Chat Bot đang hoạt động!"
+  return "Bot is running 24/7!"
 
 
-def run_web():
-  port = int(os.environ.get("PORT", 10000))
-  app.run(host="0.0.0.0", port=port)
+# Khởi tạo Gemini Client (Dùng key từ biến môi trường)
+# Anh nhớ cấu hình GEMINI_API_KEY bên Render Environment nhé
+gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-
+# Cấu hình Discord Bot Intents
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guilds = True
 intents.voice_states = True
 
-client = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Khởi tạo client kết nối tới Gemini qua chuẩn OpenAI-compatible
-ai_client = OpenAI(
-    api_key=os.environ.get("GEMINI_API_KEY"),
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-)
-
-current_voice_client = None
-inactivity_task = None
+# ID kênh được phép dùng AI (đã khóa theo yêu cầu)
+ALLOWED_CHANNEL_ID = 1549094816678420580
 
 
-async def disconnect_after_24h(voice_client):
-  global inactivity_task, current_voice_client
-  try:
-    await asyncio.sleep(86400)
-    if voice_client and voice_client.is_connected():
-      members = [m for m in voice_client.channel.members if not m.bot]
-      if len(members) == 0:
-        await voice_client.disconnect()
-        current_voice_client = None
-        inactivity_task = None
-        print("Đã tự động rời voice do trống vắng suốt 24 giờ liên tục.")
-  except asyncio.CancelledError:
-    pass
-
-
-@client.event
+# ==================== SỰ KIỆN KHI BOT SẴN SÀNG ====================
+@bot.event
 async def on_ready():
-  print(f"Đã đăng nhập thành công với tên: {client.user}")
+  print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
+  print("Bot is ready and connected to Discord!")
 
 
-@client.event
-async def on_voice_state_update(member, before, after):
-  global current_voice_client, inactivity_task
-  if member.bot:
-    return
-
-  if current_voice_client and current_voice_client.is_connected():
-    channel = current_voice_client.channel
-    real_members = [m for m in channel.members if not m.bot]
-
-    if len(real_members) == 0:
-      if inactivity_task is None or inactivity_task.done():
-        inactivity_task = asyncio.create_task(
-            disconnect_after_24h(current_voice_client)
-        )
+# ==================== LỆNH KẾT NỐI VOICE (!afk voice) ====================
+@bot.command(name="afk")
+async def afk_voice(ctx, mode: str = None):
+  if mode == "voice":
+    if ctx.author.voice:
+      channel = ctx.author.voice.channel
+      if ctx.voice_client is not None:
+        await ctx.voice_client.move_to(channel)
+      else:
+        try:
+          await channel.connect()
+        except Exception as e:
+          await ctx.send(f"❌ Có lỗi khi kết nối voice: {e}")
+          return
+      await ctx.send(
+          f"🎙️ Đã vào phòng voice **{channel.name}** và sẵn sàng hỗ trợ anh!"
+      )
     else:
-      if inactivity_task and not inactivity_task.done():
-        inactivity_task.cancel()
-        inactivity_task = None
+      await ctx.send("⚠️ Anh phải vào một phòng Voice trước đã nhé!")
+  else:
+    await ctx.send("💡 Cú pháp đúng: `!afk voice`")
 
 
-@client.event
-async def on_message(message):
-  global current_voice_client, inactivity_task
-  if message.author == client.user:
+# ==================== LỆNH LÀM SẠCH KÊNH (!clean) ====================
+@bot.command(name="clean")
+async def clean_chat(ctx, limit: int = 5):
+  await ctx.message.delete()
+  deleted = await ctx.channel.purge(limit=limit)
+  await ctx.send(
+      f"🧹 Đã dọn dẹp {len(deleted)} tin nhắn gần nhất!", delete_after=3
+  )
+
+
+# ==================== LỆNH AI CHÍNH (!ai) ====================
+@bot.command(name="ai")
+async def ai_chat(ctx, *, prompt: str = None):
+  # 1. Kiểm tra xem có đúng kênh được chỉ định hay không
+  if ctx.channel.id != ALLOWED_CHANNEL_ID:
+    await ctx.send(
+        f"⚠️ Bot chỉ trả lời lệnh `!ai` trong kênh <#{ALLOWED_CHANNEL_ID}> thôi"
+        " anh nhé!",
+        delete_after=5,
+    )
     return
 
-  content = message.content.strip()
-
-  # 1. Lệnh xóa tin nhắn (!clean <số lượng>)
-  if content.startswith("!clean"):
-    parts = content.split()
-    if len(parts) < 2 or not parts[1].isdigit():
-      await message.channel.send(
-          "❌ Vui lòng nhập đúng cú pháp, ví dụ: `!clean 5` (xóa 5 tin nhắn gần"
-          " nhất)."
-      )
-      return
-
-    limit_num = int(parts[1])
-    if limit_num <= 0:
-      await message.channel.send("❌ Số lượng tin nhắn cần xóa phải lớn hơn 0!")
-      return
-
-    try:
-      deleted = await message.channel.purge(limit=limit_num + 1)
-      temp_msg = await message.channel.send(
-          f"🗑️ Đã dọn dẹp thành công {len(deleted) - 1} tin nhắn!"
-      )
-      await asyncio.sleep(3)
-      await temp_msg.delete()
-    except discord.Forbidden:
-      await message.channel.send(
-          "❌ Bot không có quyền `Manage Messages` để xóa tin nhắn!"
-      )
-    except discord.HTTPException as e:
-      await message.channel.send(f"❌ Có lỗi xảy ra khi xóa tin nhắn: {e}")
+  if not prompt and not ctx.message.attachments:
+    await ctx.send("💡 Vui lòng nhập nội dung hoặc gửi kèm hình ảnh cần hỏi!")
     return
 
-  # 2. Lệnh treo voice (!afk voice)
-  if content == "!afk voice":
-    if not message.author.voice or not message.author.voice.channel:
-      await message.channel.send(
-          "❌ Bạn phải vào một phòng Voice trước thì bot mới biết đường vào"
-          " theo chứ!"
-      )
-      return
-
-    target_channel = message.author.voice.channel
-
+  async with ctx.typing():
     try:
-      if current_voice_client and current_voice_client.is_connected():
-        await current_voice_client.disconnect()
+      contents = []
+      image_temp_path = None
 
-      current_voice_client = await target_channel.connect()
-      await message.channel.send(
-          f"🎧 Đã vào phòng **{target_channel.name}** để treo voice và sẵn sàng"
-          " đọc thoại cùng bạn!"
-      )
+      # Xử lý hình ảnh nếu có gửi kèm
+      if ctx.message.attachments:
+        attachment = ctx.message.attachments[0]
+        if attachment.content_type and attachment.content_type.startswith(
+            "image"
+        ):
+          image_temp_path = tempfile.NamedTemporaryFile(
+              delete=False, suffix=".png"
+          ).name
+          await attachment.save(image_temp_path)
 
-      if inactivity_task and not inactivity_task.done():
-        inactivity_task.cancel()
-        inactivity_task = None
+          with open(image_temp_path, "rb") as f:
+            image_bytes = f.read()
 
-      real_members = [m for m in target_channel.members if not m.bot]
-      if len(real_members) == 0:
-        inactivity_task = asyncio.create_task(
-            disconnect_after_24h(current_voice_client)
+          contents.append(
+              genai.types.Part.from_bytes(
+                  data=image_bytes, mime_type=attachment.content_type
+              )
+          )
+
+      if prompt:
+        contents.append(prompt)
+      else:
+        contents.append(
+            "Hãy phân tích hình ảnh này và đưa ra câu trả lời chi tiết bằng"
+            " tiếng Việt."
         )
+
+      # Gọi Gemini API (Sử dụng model gemini-2.5-flash chuẩn nhanh gọn)
+      response = gemini_client.models.generate_content(
+          model="gemini-2.5-flash", contents=contents
+      )
+
+      ai_reply = response.text
+
+      # Xóa file ảnh tạm nếu có
+      if image_temp_path and os.path.exists(image_temp_path):
+        os.remove(image_temp_path)
+
+      # 2. Gửi câu trả lời dạng text lên khung chat
+      # Nếu dài quá Discord giới hạn 2000 ký tự thì cắt bớt hoặc gửi chia nhỏ
+      if len(ai_reply) > 2000:
+        chunks = [ai_reply[i : i + 1900] for i in range(0, len(ai_reply), 1900)]
+        for chunk in chunks:
+          await ctx.send(chunk)
+      else:
+        await ctx.send(ai_reply)
+
+      # 3. Tự động đọc voice nếu bot đang ở trong phòng voice
+      if ctx.voice_client and ctx.voice_client.is_connected():
+        # Rút gọn bớt nội dung đọc nếu quá dài để tránh lag voice (lấy khoảng 300 ký tự đầu)
+        speech_text = (
+            ai_reply[:300] + "..." if len(ai_reply) > 300 else ai_reply
+        )
+        # Loại bỏ các ký tự markdown rườm rà cho giọng đọc mượt hơn
+        speech_text = (
+            speech_text.replace("*", "")
+            .replace("#", "")
+            .replace("`", "")
+            .replace("-", "")
+        )
+
+        audio_path = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".mp3"
+        ).name
+
+        # Dùng edge-tts tạo file âm thanh tiếng Việt giọng nam/nữ mượt mà (vi-VN-HoaiMyNeural)
+        import subprocess
+
+        tts_cmd = f'edge-tts --voice vi-VN-HoaiMyNeural --text="{speech_text}" --write-media "{audio_path}"'
+        subprocess.run(tts_cmd, shell=True, check=True)
+
+        if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+          if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+
+          ctx.voice_client.play(
+              discord.FFmpegPCMAudio(audio_path),
+              after=lambda e: os.remove(audio_path)
+              if os.path.exists(audio_path)
+              else None,
+          )
 
     except Exception as e:
-      await message.channel.send(f"❌ Có lỗi khi kết nối voice: {e}")
-    return
-
-  # 3. Lệnh !ai (Hỗ trợ text, hình ảnh và tự động đọc giọng nói vào Voice)
-  if content.startswith("!ai") or message.attachments:
-    user_prompt = ""
-    if content.startswith("!ai "):
-      user_prompt = content[4:].strip()
-    elif content == "!ai":
-      user_prompt = ""
-
-    image_bytes = None
-    image_url = None
-    if message.attachments:
-      for attachment in message.attachments:
-        if any(
-            attachment.filename.lower().endswith(ext)
-            for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"]
-        ):
-          image_url = attachment.url
-          break
-
-    if not user_prompt and not image_url:
-      await message.channel.send(
-          "Anh nhớ nhập nội dung hoặc gửi kèm ảnh cùng lệnh `!ai` nhé!"
-      )
-      return
-
-    async with message.channel.typing():
-      try:
-        messages_payload = []
-        if image_url:
-          async with httpx.AsyncClient() as httpx_client:
-            img_response = await httpx_client.get(image_url)
-            if img_response.status_code == 200:
-              image_bytes = img_response.content
-
-          if image_bytes:
-            encoded_image = base64.b64encode(image_bytes).decode("utf-8")
-            if not user_prompt:
-              user_prompt = (
-                  "Hãy đọc toàn bộ văn bản trong ảnh này và dịch sang tiếng Việt"
-                  " một cách tự nhiên, chính xác nhất."
-              )
-
-            messages_payload = [{
-                "role": "system",
-                "content": (
-                    "Bạn là một trợ lý AI thông minh, ngắn gọn, súc tích để tiện"
-                    " đọc giọng nói."
-                ),
-            }, {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{encoded_image}"
-                        },
-                    },
-                ],
-            }]
-          else:
-            await message.channel.send("❌ Không thể tải được ảnh từ Discord về!")
-            return
-        else:
-          messages_payload = [{
-              "role": "system",
-              "content": (
-                  "Bạn là một trợ lý AI thân thiện trên Discord. Hãy trả lời"
-                  " ngắn gọn, rõ ràng."
-              ),
-          }, {"role": "user", "content": user_prompt}]
-
-        response = ai_client.chat.completions.create(
-            model="gemini-3.6-flash",
-            messages=messages_payload,
-            stream=False,
-        )
-        reply_content = response.choices[0].message.content
-
-        # Gửi phản hồi dạng chữ lên kênh chat (cắt ngắn nếu quá 2000 ký tự)
-        text_to_send = reply_content
-        if len(text_to_send) > 2000:
-          text_to_send = text_to_send[:1997] + "..."
-        await message.channel.send(text_to_send)
-
-        # Nếu bot đang ở trong phòng voice, tự động chuyển nội dung câu trả lời thành giọng nói phát vào voice
-        if current_voice_client and current_voice_client.is_connected():
-          try:
-            # Tạo file âm thanh tạm thời từ edge-tts (giọng đọc Nam Minh tự nhiên)
-            voice_name = "vi-VN-NamMinhNeural"
-            communicate = edge_tts.Communicate(reply_content, voice_name)
-
-            with tempfile.NamedTemporaryFile(
-                delete=False, suffix=".mp3"
-            ) as tf:
-              temp_filename = tf.name
-
-            await communicate.save(temp_filename)
-
-            # Phát âm thanh vào phòng voice nếu bot chưa phát audio khác
-            if not current_voice_client.is_playing():
-              audio_source = discord.FFmpegPCMAudio(temp_filename)
-              current_voice_client.play(audio_source)
-          except Exception as voice_err:
-            print(f"Lỗi khi phát giọng nói trong voice: {voice_err}")
-
-      except Exception as e:
-        await message.channel.send(f"Đã xảy ra lỗi khi xử lý: {e}")
-    return
+      await ctx.send(f"❌ Đã xảy ra lỗi khi xử lý yêu cầu: `{e}`")
 
 
-TOKEN = os.environ.get("DISCORD_TOKEN")
-
+# ==================== CHẠY ỨNG DỤNG ====================
 if __name__ == "__main__":
-  web_thread = threading.Thread(target=run_web)
-  web_thread.daemon = True
-  web_thread.start()
+  import threading
 
+  # Chạy Flask ở background thread để giữ cổng mạng sống trên Render
+  def run_flask():
+    app.run(host="0.0.0.0", port=10000)
+
+  t = threading.Thread(target=run_flask)
+  t.daemon = True
+  t.start()
+
+  # Chạy Discord Bot bằng Token trong biến môi trường
+  TOKEN = os.environ.get("DISCORD_TOKEN")
   if TOKEN:
-    client.run(TOKEN)
+    bot.run(TOKEN)
   else:
-    print(
-        "Lỗi: Chưa thiết lập DISCORD_TOKEN trong Environment Variables của"
-        " Render!"
-    )
+    print("ERROR: DISCORD_TOKEN not found in environment variables!")
