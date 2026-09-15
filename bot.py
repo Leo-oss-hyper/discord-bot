@@ -1,12 +1,12 @@
 import base64
 import os
+import subprocess
 import tempfile
 import discord
 from discord.ext import commands
 from flask import Flask
 from google import genai
 import httpx
-from openai import OpenAI
 
 # ==================== CẤU HÌNH KHỞI TẠO ====================
 app = Flask(__name__)
@@ -18,7 +18,6 @@ def home():
 
 
 # Khởi tạo Gemini Client (Dùng key từ biến môi trường)
-# Anh nhớ cấu hình GEMINI_API_KEY bên Render Environment nhé
 gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 # Cấu hình Discord Bot Intents
@@ -28,8 +27,8 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ID kênh được phép dùng AI (đã khóa theo yêu cầu)
-ALLOWED_CHANNEL_ID = 1549094816678420580
+# ID kênh được phép dùng AI (Cố định dạng chuỗi để so sánh chính xác tuyệt đối)
+ALLOWED_CHANNEL_ID = "1549094816678420580"
 
 
 # ==================== SỰ KIỆN KHI BOT SẴN SÀNG ====================
@@ -75,8 +74,8 @@ async def clean_chat(ctx, limit: int = 5):
 # ==================== LỆNH AI CHÍNH (!ai) ====================
 @bot.command(name="ai")
 async def ai_chat(ctx, *, prompt: str = None):
-  # 1. Kiểm tra xem có đúng kênh được chỉ định hay không
-  if ctx.channel.id != ALLOWED_CHANNEL_ID:
+  # KIỂM TRA KÊNH: Nếu gõ ngoài kênh được chỉ định thì chặn ngay lập tức
+  if str(ctx.channel.id) != ALLOWED_CHANNEL_ID:
     await ctx.send(
         f"⚠️ Bot chỉ trả lời lệnh `!ai` trong kênh <#{ALLOWED_CHANNEL_ID}> thôi"
         " anh nhé!",
@@ -121,7 +120,7 @@ async def ai_chat(ctx, *, prompt: str = None):
             " tiếng Việt."
         )
 
-      # Gọi Gemini API (Sử dụng model gemini-2.5-flash chuẩn nhanh gọn)
+      # Gọi Gemini API
       response = gemini_client.models.generate_content(
           model="gemini-2.5-flash", contents=contents
       )
@@ -132,8 +131,7 @@ async def ai_chat(ctx, *, prompt: str = None):
       if image_temp_path and os.path.exists(image_temp_path):
         os.remove(image_temp_path)
 
-      # 2. Gửi câu trả lời dạng text lên khung chat
-      # Nếu dài quá Discord giới hạn 2000 ký tự thì cắt bớt hoặc gửi chia nhỏ
+      # Gửi câu trả lời lên chat
       if len(ai_reply) > 2000:
         chunks = [ai_reply[i : i + 1900] for i in range(0, len(ai_reply), 1900)]
         for chunk in chunks:
@@ -141,13 +139,11 @@ async def ai_chat(ctx, *, prompt: str = None):
       else:
         await ctx.send(ai_reply)
 
-      # 3. Tự động đọc voice nếu bot đang ở trong phòng voice
+      # Đọc voice nếu bot đang ở trong phòng voice
       if ctx.voice_client and ctx.voice_client.is_connected():
-        # Rút gọn bớt nội dung đọc nếu quá dài để tránh lag voice (lấy khoảng 300 ký tự đầu)
         speech_text = (
             ai_reply[:300] + "..." if len(ai_reply) > 300 else ai_reply
         )
-        # Loại bỏ các ký tự markdown rườm rà cho giọng đọc mượt hơn
         speech_text = (
             speech_text.replace("*", "")
             .replace("#", "")
@@ -158,9 +154,6 @@ async def ai_chat(ctx, *, prompt: str = None):
         audio_path = tempfile.NamedTemporaryFile(
             delete=False, suffix=".mp3"
         ).name
-
-        # Dùng edge-tts tạo file âm thanh tiếng Việt giọng nam/nữ mượt mà (vi-VN-HoaiMyNeural)
-        import subprocess
 
         tts_cmd = f'edge-tts --voice vi-VN-HoaiMyNeural --text="{speech_text}" --write-media "{audio_path}"'
         subprocess.run(tts_cmd, shell=True, check=True)
@@ -184,15 +177,15 @@ async def ai_chat(ctx, *, prompt: str = None):
 if __name__ == "__main__":
   import threading
 
-  # Chạy Flask ở background thread để giữ cổng mạng sống trên Render
+
   def run_flask():
     app.run(host="0.0.0.0", port=10000)
+
 
   t = threading.Thread(target=run_flask)
   t.daemon = True
   t.start()
 
-  # Chạy Discord Bot bằng Token trong biến môi trường
   TOKEN = os.environ.get("DISCORD_TOKEN")
   if TOKEN:
     bot.run(TOKEN)
