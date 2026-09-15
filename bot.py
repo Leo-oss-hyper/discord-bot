@@ -1,18 +1,20 @@
 import asyncio
 import base64
 import os
+import tempfile
 import threading
 import discord
 from flask import Flask
 import httpx
 from openai import OpenAI
+import edge_tts
 
 app = Flask(__name__)
 
 
 @app.route("/")
 def home():
-  return "Discord AFK Voice & Gemini Vision Bot đang hoạt động!"
+  return "Discord AI Voice Chat Bot đang hoạt động!"
 
 
 def run_web():
@@ -86,7 +88,7 @@ async def on_message(message):
 
   content = message.content.strip()
 
-  # Xử lý lệnh xóa tin nhắn (!clean <số lượng>)
+  # 1. Lệnh xóa tin nhắn (!clean <số lượng>)
   if content.startswith("!clean"):
     parts = content.split()
     if len(parts) < 2 or not parts[1].isdigit():
@@ -102,7 +104,6 @@ async def on_message(message):
       return
 
     try:
-      # Xóa cả lệnh !clean vừa gõ và số lượng tin nhắn chỉ định (+1)
       deleted = await message.channel.purge(limit=limit_num + 1)
       temp_msg = await message.channel.send(
           f"🗑️ Đã dọn dẹp thành công {len(deleted) - 1} tin nhắn!"
@@ -117,7 +118,7 @@ async def on_message(message):
       await message.channel.send(f"❌ Có lỗi xảy ra khi xóa tin nhắn: {e}")
     return
 
-  # Xử lý lệnh AFK voice
+  # 2. Lệnh treo voice (!afk voice)
   if content == "!afk voice":
     if not message.author.voice or not message.author.voice.channel:
       await message.channel.send(
@@ -134,7 +135,8 @@ async def on_message(message):
 
       current_voice_client = await target_channel.connect()
       await message.channel.send(
-          f"🎧 Đã vào phòng **{target_channel.name}** để treo voice cùng bạn!"
+          f"🎧 Đã vào phòng **{target_channel.name}** để treo voice và sẵn sàng"
+          " đọc thoại cùng bạn!"
       )
 
       if inactivity_task and not inactivity_task.done():
@@ -151,7 +153,7 @@ async def on_message(message):
       await message.channel.send(f"❌ Có lỗi khi kết nối voice: {e}")
     return
 
-  # Xử lý lệnh !ai (hỗ trợ cả văn bản và hình ảnh)
+  # 3. Lệnh !ai (Hỗ trợ text, hình ảnh và tự động đọc giọng nói vào Voice)
   if content.startswith("!ai") or message.attachments:
     user_prompt = ""
     if content.startswith("!ai "):
@@ -196,8 +198,8 @@ async def on_message(message):
             messages_payload = [{
                 "role": "system",
                 "content": (
-                    "Bạn là một trợ lý AI thông minh, giỏi phân tích hình ảnh và"
-                    " dịch thuật trên Discord."
+                    "Bạn là một trợ lý AI thông minh, ngắn gọn, súc tích để tiện"
+                    " đọc giọng nói."
                 ),
             }, {
                 "role": "user",
@@ -218,7 +220,8 @@ async def on_message(message):
           messages_payload = [{
               "role": "system",
               "content": (
-                  "Bạn là một trợ lý AI hữu ích, thân thiện trên Discord."
+                  "Bạn là một trợ lý AI thân thiện trên Discord. Hãy trả lời"
+                  " ngắn gọn, rõ ràng."
               ),
           }, {"role": "user", "content": user_prompt}]
 
@@ -229,10 +232,33 @@ async def on_message(message):
         )
         reply_content = response.choices[0].message.content
 
-        if len(reply_content) > 2000:
-          reply_content = reply_content[:1997] + "..."
+        # Gửi phản hồi dạng chữ lên kênh chat (cắt ngắn nếu quá 2000 ký tự)
+        text_to_send = reply_content
+        if len(text_to_send) > 2000:
+          text_to_send = text_to_send[:1997] + "..."
+        await message.channel.send(text_to_send)
 
-        await message.channel.send(reply_content)
+        # Nếu bot đang ở trong phòng voice, tự động chuyển nội dung câu trả lời thành giọng nói phát vào voice
+        if current_voice_client and current_voice_client.is_connected():
+          try:
+            # Tạo file âm thanh tạm thời từ edge-tts (giọng đọc Nam Minh tự nhiên)
+            voice_name = "vi-VN-NamMinhNeural"
+            communicate = edge_tts.Communicate(reply_content, voice_name)
+
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=".mp3"
+            ) as tf:
+              temp_filename = tf.name
+
+            await communicate.save(temp_filename)
+
+            # Phát âm thanh vào phòng voice nếu bot chưa phát audio khác
+            if not current_voice_client.is_playing():
+              audio_source = discord.FFmpegPCMAudio(temp_filename)
+              current_voice_client.play(audio_source)
+          except Exception as voice_err:
+            print(f"Lỗi khi phát giọng nói trong voice: {voice_err}")
+
       except Exception as e:
         await message.channel.send(f"Đã xảy ra lỗi khi xử lý: {e}")
     return
